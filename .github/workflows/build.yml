@@ -1,0 +1,183 @@
+name: Build App APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      orderId:
+        description: "Order ID from Firestore"
+        required: true
+        type: string
+      appName:
+        description: "App Name"
+        required: true
+        type: string
+      website:
+        description: "Website URL to convert to app"
+        required: true
+        type: string
+      iconUrl:
+        description: "App Icon URL"
+        required: false
+        type: string
+      splashUrl:
+        description: "Splash Screen URL"
+        required: false
+        type: string
+      userId:
+        description: "User ID"
+        required: false
+        type: string
+      userName:
+        description: "User Name"
+        required: false
+        type: string
+      planTitle:
+        description: "Plan Title"
+        required: false
+        type: string
+      deliveryTime:
+        description: "Delivery Time"
+        required: false
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Template Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+          cache: "npm"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: "temurin"
+          java-version: "17"
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          cd android && ./gradlew dependencies
+
+      - name: Configure App
+        run: |
+          # Update app.json with order data
+          sed -i "s/APP_NAME_PLACEHOLDER/${{ github.event.inputs.appName }}/g" app.json
+          sed -i "s/APP_URL_PLACEHOLDER/${{ github.event.inputs.website }}/g" app.json
+          sed -i "s/ORDER_ID_PLACEHOLDER/${{ github.event.inputs.orderId }}/g" app.json
+
+          # Update package name to be unique for each order
+          PACKAGE_NAME="com.appmaker.${{ github.event.inputs.orderId }}"
+          sed -i "s/com.techlead.appmaker/$PACKAGE_NAME/g" app.json
+          sed -i "s/com.techlead.appmaker/$PACKAGE_NAME/g" android/app/build.gradle
+
+          # Update app name in strings.xml
+          sed -i "s/App Maker/${{ github.event.inputs.appName }}/g" android/app/src/main/res/values/strings.xml
+
+          echo "App configured for order: ${{ github.event.inputs.orderId }}"
+          echo "App Name: ${{ github.event.inputs.appName }}"
+          echo "Website: ${{ github.event.inputs.website }}"
+          echo "Package: $PACKAGE_NAME"
+
+      - name: Download App Icon
+        if: ${{ github.event.inputs.iconUrl != '' }}
+        run: |
+          if [ -n "${{ github.event.inputs.iconUrl }}" ]; then
+            echo "Downloading app icon from: ${{ github.event.inputs.iconUrl }}"
+            curl -o android/app/src/main/res/mipmap-hdpi/ic_launcher.png "${{ github.event.inputs.iconUrl }}"
+            curl -o android/app/src/main/res/mipmap-mdpi/ic_launcher.png "${{ github.event.inputs.iconUrl }}"
+            curl -o android/app/src/main/res/mipmap-xhdpi/ic_launcher.png "${{ github.event.inputs.iconUrl }}"
+            curl -o android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png "${{ github.event.inputs.iconUrl }}"
+            curl -o android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png "${{ github.event.inputs.iconUrl }}"
+          fi
+
+      - name: Download Splash Screen
+        if: ${{ github.event.inputs.splashUrl != '' }}
+        run: |
+          if [ -n "${{ github.event.inputs.splashUrl }}" ]; then
+            echo "Downloading splash screen from: ${{ github.event.inputs.splashUrl }}"
+            curl -o android/app/src/main/res/drawable/splash_screen.png "${{ github.event.inputs.splashUrl }}"
+          fi
+
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleRelease
+
+      - name: Upload APK to Firebase Storage
+        env:
+          FIREBASE_PROJECT_ID: app-maker-2024
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          # Install Firebase CLI
+          npm install -g firebase-tools
+
+          # Login to Firebase
+          echo "$FIREBASE_TOKEN" | firebase login --token
+
+          # Upload APK to Firebase Storage
+          APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          STORAGE_PATH="apks/${{ github.event.inputs.orderId }}.apk"
+
+          echo "Uploading APK to Firebase Storage..."
+          firebase storage:upload "$APK_PATH" "$STORAGE_PATH" --project "$FIREBASE_PROJECT_ID"
+
+          # Get public URL
+          APK_URL="https://firebasestorage.googleapis.com/v0/b/$FIREBASE_PROJECT_ID.appspot.com/o/apks%2F${{ github.event.inputs.orderId }}.apk?alt=media"
+          echo "APK_URL=$APK_URL" >> $GITHUB_ENV
+
+      - name: Update Order Status
+        run: |
+          # Update Firestore order with APK URL
+          curl -X POST "https://us-central1-app-maker-2024.cloudfunctions.net/updateOrderStatus" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "orderId": "${{ github.event.inputs.orderId }}",
+              "status": "Ready",
+              "apkUrl": "'$APK_URL'"
+            }'
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.inputs.orderId }}
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Notify Success
+        run: |
+          echo "✅ Build completed successfully!"
+          echo "Order ID: ${{ github.event.inputs.orderId }}"
+          echo "App Name: ${{ github.event.inputs.appName }}"
+          echo "APK URL: $APK_URL"
+
+  notify-failure:
+    if: failure()
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Update Order Status (Failed)
+        run: |
+          curl -X POST "https://us-central1-app-maker-2024.cloudfunctions.net/updateOrderStatus" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "orderId": "${{ github.event.inputs.orderId }}",
+              "status": "Build Failed",
+              "error": "Build process failed. Please check logs."
+            }'
+
+      - name: Notify Failure
+        run: |
+          echo "❌ Build failed for order: ${{ github.event.inputs.orderId }}"
+          echo "Please check the workflow logs for details."
