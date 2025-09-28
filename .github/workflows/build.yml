@@ -69,7 +69,9 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install
-          cd android && ./gradlew dependencies
+          cd android
+          chmod +x gradlew
+          ./gradlew dependencies
 
       - name: Configure App
         run: |
@@ -114,6 +116,7 @@ jobs:
       - name: Build APK
         run: |
           cd android
+          chmod +x gradlew
           ./gradlew assembleRelease
 
       - name: Upload APK to Firebase Storage
