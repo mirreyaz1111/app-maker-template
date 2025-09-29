@@ -44,9 +44,8 @@ jobs:
       - name: Install Dependencies
         run: |
           npm install
-          cd android
-          chmod +x gradlew
-          ./gradlew dependencies
+          cd android || true
+          if [ -f gradlew ]; then chmod +x gradlew && ./gradlew dependencies; fi
 
       - name: Configure App
         env:
@@ -88,10 +87,83 @@ jobs:
           console.log('Configured with ORDER_ID=%s, APP_NAME=%s, WEBSITE=%s', ORDER_ID, APP_NAME, WEBSITE);
           NODE
 
+      - name: Ensure Android files
+        run: |
+          set -e
+          mkdir -p android/app/src/main
+          if [ ! -f android/app/src/main/AndroidManifest.xml ]; then
+            echo "Creating AndroidManifest.xml"
+            printf '%s\n' '<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="com.appmaker.${{ github.event.inputs.orderId }}">' \
+'<uses-permission android:name="android.permission.INTERNET" />' \
+'<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />' \
+'<application android:label="@string/app_name" android:allowBackup="false">' \
+'<activity android:name=".MainActivity" android:label="@string/app_name" android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode" android:launchMode="singleTask" android:windowSoftInputMode="adjustResize" android:exported="true">' \
+'<intent-filter>' \
+'<action android:name="android.intent.action.MAIN" />' \
+'<category android:name="android.intent.category.LAUNCHER" />' \
+'</intent-filter>' \
+'</activity>' \
+'</application>' \
+'</manifest>' > android/app/src/main/AndroidManifest.xml
+          fi
+
+          mkdir -p android/app/src/main/java/com/techlead/appmaker
+          if [ ! -f android/app/src/main/java/com/techlead/appmaker/MainActivity.java ]; then
+            printf '%s\n' 'package com.techlead.appmaker;' '' \
+'import com.facebook.react.ReactActivity;' \
+'import com.facebook.react.ReactActivityDelegate;' \
+'import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;' \
+'import com.facebook.react.defaults.DefaultReactActivityDelegate;' '' \
+'public class MainActivity extends ReactActivity {' \
+'  @Override protected String getMainComponentName() { return "App Maker"; }' '' \
+'  @Override protected ReactActivityDelegate createReactActivityDelegate() {' \
+'    return new DefaultReactActivityDelegate(' \
+'      this,' \
+'      getMainComponentName(),' \
+'      DefaultNewArchitectureEntryPoint.getFabricEnabled()' \
+'    );' \
+'  }' \
+'}' > android/app/src/main/java/com/techlead/appmaker/MainActivity.java
+          fi
+
+          if [ ! -f android/app/src/main/java/com/techlead/appmaker/MainApplication.java ]; then
+            printf '%s\n' 'package com.techlead.appmaker;' '' \
+'import android.app.Application;' \
+'import com.facebook.react.ReactApplication;' \
+'import com.facebook.react.ReactNativeHost;' \
+'import com.facebook.react.ReactPackage;' \
+'import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;' \
+'import com.facebook.react.defaults.DefaultReactNativeHost;' \
+'import com.facebook.soloader.SoLoader;' \
+'import java.util.List;' \
+'import java.util.Arrays;' '' \
+'public class MainApplication extends Application implements ReactApplication {' \
+'  private final ReactNativeHost mReactNativeHost = new DefaultReactNativeHost(this) {' \
+'    @Override public boolean getUseDeveloperSupport() { return BuildConfig.DEBUG; }' \
+'    @Override protected List<ReactPackage> getPackages() { return Arrays.asList(); }' \
+'    @Override protected String getJSMainModuleName() { return "index"; }' \
+'    @Override protected boolean isNewArchEnabled() { return BuildConfig.IS_NEW_ARCHITECTURE_ENABLED; }' \
+'    @Override protected Boolean isHermesEnabled() { return BuildConfig.IS_HERMES_ENABLED; }' \
+'  };' \
+'  @Override public ReactNativeHost getReactNativeHost() { return mReactNativeHost; }' \
+'  @Override public void onCreate() {' \
+'    super.onCreate();' \
+'    SoLoader.init(this, false);' \
+'    if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {' \
+'      DefaultNewArchitectureEntryPoint.load();' \
+'    }' \
+'  }' \
+'}' > android/app/src/main/java/com/techlead/appmaker/MainApplication.java
+          fi
+
+          if [ ! -f android/app/debug.keystore ]; then
+            keytool -genkey -v -keystore android/app/debug.keystore -storepass android -alias androiddebugkey -keypass android -dname "CN=Android,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+          fi
+
       - name: Build APK
         run: |
           cd android
-          chmod +x gradlew
+          chmod +x gradlew || true
           ./gradlew assembleRelease
 
       - name: Upload APK to Firebase Storage
