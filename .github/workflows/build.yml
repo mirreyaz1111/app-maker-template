@@ -86,7 +86,6 @@ jobs:
           const APP_NAME = process.env.APP_NAME || 'App Maker';
           const WEBSITE = process.env.WEBSITE || 'https://example.com';
 
-          // Update app.json
           const appJsonPath = path.join(process.cwd(), 'app.json');
           const appJson = JSON.parse(fs.readFileSync(appJsonPath, 'utf8'));
           appJson.expo = appJson.expo || {};
@@ -98,13 +97,13 @@ jobs:
           appJson.expo.ios = Object.assign({}, appJson.expo.ios || {}, { bundleIdentifier: pkg });
           fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2));
 
-          // Update android/app/build.gradle - replace literal package if present
           const gradlePath = path.join(process.cwd(), 'android', 'app', 'build.gradle');
-          let gradle = fs.readFileSync(gradlePath, 'utf8');
-          gradle = gradle.split("com.techlead.appmaker").join(pkg);
-          fs.writeFileSync(gradlePath, gradle);
+          if (fs.existsSync(gradlePath)) {
+            let gradle = fs.readFileSync(gradlePath, 'utf8');
+            gradle = gradle.split("com.techlead.appmaker").join(pkg);
+            fs.writeFileSync(gradlePath, gradle);
+          }
 
-          // Update strings.xml app name
           const stringsPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
           if (fs.existsSync(stringsPath)) {
             let s = fs.readFileSync(stringsPath, 'utf8');
@@ -113,6 +112,121 @@ jobs:
           }
           console.log('Configured with ORDER_ID=%s, APP_NAME=%s, WEBSITE=%s', ORDER_ID, APP_NAME, WEBSITE);
           NODE
+
+      - name: Ensure Android files
+        run: |
+          mkdir -p android/app/src/main
+          if [ ! -f android/app/src/main/AndroidManifest.xml ]; then
+            cat > android/app/src/main/AndroidManifest.xml <<'XML'
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <application
+    android:name=".MainApplication"
+    android:label="@string/app_name"
+    android:allowBackup="false">
+    <activity
+      android:name=".MainActivity"
+      android:label="@string/app_name"
+      android:configChanges="keyboard|keyboardHidden|orientation|screenSize|uiMode"
+      android:launchMode="singleTask"
+      android:windowSoftInputMode="adjustResize"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+      </intent-filter>
+    </activity>
+  </application>
+</manifest>
+XML
+          fi
+
+          mkdir -p android/app/src/main/java/com/techlead/appmaker
+
+          if [ ! -f android/app/src/main/java/com/techlead/appmaker/MainActivity.java ]; then
+            cat > android/app/src/main/java/com/techlead/appmaker/MainActivity.java <<'JAVA'
+package com.techlead.appmaker;
+
+import com.facebook.react.ReactActivity;
+import com.facebook.react.ReactActivityDelegate;
+import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
+import com.facebook.react.defaults.DefaultReactActivityDelegate;
+
+public class MainActivity extends ReactActivity {
+  @Override
+  protected String getMainComponentName() {
+    return "App Maker";
+  }
+
+  @Override
+  protected ReactActivityDelegate createReactActivityDelegate() {
+    return new DefaultReactActivityDelegate(
+      this,
+      getMainComponentName(),
+      DefaultNewArchitectureEntryPoint.getFabricEnabled()
+    );
+  }
+}
+JAVA
+          fi
+
+          if [ ! -f android/app/src/main/java/com/techlead/appmaker/MainApplication.java ]; then
+            cat > android/app/src/main/java/com/techlead/appmaker/MainApplication.java <<'JAVA'
+package com.techlead.appmaker;
+
+import android.app.Application;
+import com.facebook.react.ReactApplication;
+import com.facebook.react.ReactNativeHost;
+import com.facebook.react.ReactPackage;
+import com.facebook.react.defaults.DefaultNewArchitectureEntryPoint;
+import com.facebook.react.defaults.DefaultReactNativeHost;
+import com.facebook.soloader.SoLoader;
+import java.util.List;
+import java.util.Arrays;
+
+public class MainApplication extends Application implements ReactApplication {
+  private final ReactNativeHost mReactNativeHost = new DefaultReactNativeHost(this) {
+    @Override
+    public boolean getUseDeveloperSupport() {
+      return BuildConfig.DEBUG;
+    }
+    @Override
+    protected List<ReactPackage> getPackages() {
+      return Arrays.asList();
+    }
+    @Override
+    protected String getJSMainModuleName() {
+      return "index";
+    }
+    @Override
+    protected boolean isNewArchEnabled() {
+      return BuildConfig.IS_NEW_ARCHITECTURE_ENABLED;
+    }
+    @Override
+    protected Boolean isHermesEnabled() {
+      return BuildConfig.IS_HERMES_ENABLED;
+    }
+  };
+  @Override
+  public ReactNativeHost getReactNativeHost() {
+    return mReactNativeHost;
+  }
+  @Override
+  public void onCreate() {
+    super.onCreate();
+    SoLoader.init(this, false);
+    if (BuildConfig.IS_NEW_ARCHITECTURE_ENABLED) {
+      DefaultNewArchitectureEntryPoint.load();
+    }
+  }
+}
+JAVA
+          fi
+
+          if [ ! -f android/app/debug.keystore ]; then
+            keytool -genkey -v -keystore android/app/debug.keystore -storepass android -alias androiddebugkey -keypass android -dname "CN=Android,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+          fi
 
       - name: Download App Icon
         if: ${{ github.event.inputs.iconUrl != '' }}
