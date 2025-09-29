@@ -1,0 +1,125 @@
+name: Build App
+
+on:
+  workflow_dispatch:
+    inputs:
+      orderId:
+        description: "Order ID from Firestore"
+        required: true
+        type: string
+      appName:
+        description: "App Name"
+        required: true
+        type: string
+      website:
+        description: "Website URL to convert to app"
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Template Repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository }}
+          token: ${{ secrets.PAT_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Dependencies
+        run: |
+          npm install
+          cd android
+          chmod +x gradlew
+          ./gradlew dependencies
+
+      - name: Configure App
+        env:
+          ORDER_ID: ${{ github.event.inputs.orderId }}
+          APP_NAME: ${{ github.event.inputs.appName }}
+          WEBSITE: ${{ github.event.inputs.website }}
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const path = require('path');
+          const ORDER_ID = process.env.ORDER_ID;
+          const APP_NAME = process.env.APP_NAME || 'App Maker';
+          const WEBSITE = process.env.WEBSITE || 'https://example.com';
+
+          const appJsonPath = path.join(process.cwd(), 'app.json');
+          const appJson = JSON.parse(fs.readFileSync(appJsonPath, 'utf8'));
+          appJson.expo = appJson.expo || {};
+          appJson.expo.name = APP_NAME;
+          appJson.expo.slug = `app-${ORDER_ID}`;
+          appJson.expo.extra = Object.assign({}, appJson.expo.extra || {}, { orderId: ORDER_ID, website: WEBSITE });
+          const pkg = `com.appmaker.${ORDER_ID}`;
+          appJson.expo.android = Object.assign({}, appJson.expo.android || {}, { package: pkg });
+          appJson.expo.ios = Object.assign({}, appJson.expo.ios || {}, { bundleIdentifier: pkg });
+          fs.writeFileSync(appJsonPath, JSON.stringify(appJson, null, 2));
+
+          const gradlePath = path.join(process.cwd(), 'android', 'app', 'build.gradle');
+          if (fs.existsSync(gradlePath)) {
+            let gradle = fs.readFileSync(gradlePath, 'utf8');
+            gradle = gradle.split('com.techlead.appmaker').join(pkg);
+            fs.writeFileSync(gradlePath, gradle);
+          }
+
+          const stringsPath = path.join(process.cwd(), 'android', 'app', 'src', 'main', 'res', 'values', 'strings.xml');
+          if (fs.existsSync(stringsPath)) {
+            let s = fs.readFileSync(stringsPath, 'utf8');
+            s = s.split('App Maker').join(APP_NAME);
+            fs.writeFileSync(stringsPath, s);
+          }
+          console.log('Configured with ORDER_ID=%s, APP_NAME=%s, WEBSITE=%s', ORDER_ID, APP_NAME, WEBSITE);
+          NODE
+
+      - name: Build APK
+        run: |
+          cd android
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Upload APK to Firebase Storage
+        env:
+          FIREBASE_PROJECT_ID: app-maker-2024
+          FIREBASE_TOKEN: ${{ secrets.FIREBASE_TOKEN }}
+        run: |
+          npm install -g firebase-tools
+          echo "$FIREBASE_TOKEN" | firebase login --token
+          APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
+          STORAGE_PATH="apks/${{ github.event.inputs.orderId }}.apk"
+          echo "Uploading APK to Firebase Storage..."
+          firebase storage:upload "$APK_PATH" "$STORAGE_PATH" --project "$FIREBASE_PROJECT_ID"
+          APK_URL="https://firebasestorage.googleapis.com/v0/b/$FIREBASE_PROJECT_ID.appspot.com/o/apks%2F${{ github.event.inputs.orderId }}.apk?alt=media"
+          echo "APK_URL=$APK_URL" >> $GITHUB_ENV
+
+      - name: Update Order Status
+        run: |
+          curl -X POST "https://us-central1-app-maker-2024.cloudfunctions.net/updateOrderStatus" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "orderId": "${{ github.event.inputs.orderId }}",
+              "status": "Ready",
+              "apkUrl": "'$APK_URL'"
+            }'
+
+      - name: Upload APK as Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-${{ github.event.inputs.orderId }}
+          path: android/app/build/outputs/apk/release/app-release.apk
